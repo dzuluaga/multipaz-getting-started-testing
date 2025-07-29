@@ -11,8 +11,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeContentPadding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
@@ -26,7 +24,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
-import kotlinx.datetime.Clock
 import kotlinx.io.bytestring.ByteString
 import org.example.project.composeapp.generated.resources.Res
 import org.example.project.composeapp.generated.resources.compose_multiplatform
@@ -43,12 +40,11 @@ import org.multipaz.documenttype.DocumentTypeRepository
 import org.multipaz.documenttype.knowntypes.DrivingLicense
 import org.multipaz.mdoc.credential.MdocCredential
 import org.multipaz.prompt.PromptModel
-import org.multipaz.securearea.SecureArea
 import org.multipaz.securearea.SecureAreaRepository
 import kotlinx.io.bytestring.encodeToByteString
 import org.multipaz.asn1.ASN1Integer
-import org.multipaz.cbor.Simple
 import org.multipaz.compose.permissions.rememberBluetoothPermissionState
+import org.multipaz.compose.presentment.Presentment
 import org.multipaz.credential.Credential
 import org.multipaz.crypto.X509Cert
 import org.multipaz.crypto.Algorithm
@@ -60,38 +56,12 @@ import org.multipaz.mdoc.util.MdocUtil
 import org.multipaz.securearea.CreateKeySettings
 import org.multipaz.trustmanagement.TrustManager
 import org.multipaz.trustmanagement.TrustPoint
-import org.multipaz.compose.presentment.Presentment
 import org.multipaz.models.presentment.PresentmentModel
 import org.multipaz.models.presentment.PresentmentSource
-import org.multipaz.models.presentment.SimplePresentmentSource
-import kotlin.time.Duration
+import org.multipaz.request.Request
 import kotlin.time.Duration.Companion.days
 
 
-@Composable
-private fun showQrButton(
-    showQrCode: MutableState<ByteString?>,
-    presentmentModel: PresentmentModel?,
-    documentStore: DocumentStore?,
-    documentList: List<Document>
-) {
-    Column(
-        modifier = Modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Button(onClick = {
-            presentmentModel?.reset()
-            presentmentModel?.setConnecting()
-            presentmentModel?.presentmentScope?.launch() {
-                // QR code generation logic would go here
-                // For now, just show a placeholder
-            }
-        }) {
-            Text("Present mDL via QR")
-        }
-    }
-}
 @Composable
 @Preview
 fun App(promptModel: PromptModel) {
@@ -107,7 +77,6 @@ fun App(promptModel: PromptModel) {
 
     var readerTrustManager: TrustManager? = null
     var presentmentModel: PresentmentModel? = null
-    var presentmentSource: PresentmentSource? = null
     var documentTypeRepository: DocumentTypeRepository? = null
 
     LaunchedEffect(Unit) {
@@ -148,22 +117,16 @@ fun App(promptModel: PromptModel) {
         documentTypeRepository = DocumentTypeRepository().apply {
             addDocumentType(DrivingLicense.getDocumentType())
         }
-        val docStore =
-            buildDocumentStore(storage = storage, secureAreaRepository = secureAreaRepository) {}
-        documentStore = docStore
+        documentStore = buildDocumentStore(storage = storage, secureAreaRepository = secureAreaRepository) {}
 
         // Initialize PresentmentModel and PresentmentSource
         presentmentModel = PresentmentModel().apply { setPromptModel(promptModel) }
-        presentmentSource = SimplePresentmentSource(
-            documentStore = documentStore!!,
-            documentTypeRepository = documentTypeRepository!!,
-            readerTrustManager = readerTrustManager!!,
-            preferSignatureToKeyAgreement = true,
-            domainMdocSignature = "mdoc",
-        )
+        
+        val specificDocumentId = documentStore!!.listDocuments().firstOrNull()
+
 
         // Create document
-        document = docStore.createDocument(
+        document = documentStore!!.createDocument(
             displayName = "Erika's Driving License",
             typeDisplayName = "Utopia Driving License",
             cardArt = kotlinx.io.bytestring.ByteString(
@@ -225,8 +188,6 @@ fun App(promptModel: PromptModel) {
         var showContent by remember { mutableStateOf(false) }
         val coroutineScope = rememberCoroutineScope()
 
-        val deviceEngagement = remember { mutableStateOf<ByteString?>(null) }
-        val state = presentmentModel?.state?.collectAsState() ?: remember { mutableStateOf(null) }
 
         // Show document detail fragment as full screen
         if (showDocumentDetail && selectedDocument != null) {
@@ -235,264 +196,241 @@ fun App(promptModel: PromptModel) {
                 onClose = {
                     showDocumentDetail = false
                     selectedDocument = null
-                }
+                },
+                presentmentModel = presentmentModel!!,
+                documentStore = documentStore!!,
+                documentTypeRepository = documentTypeRepository!!,
+                readerTrustManager = readerTrustManager,
             )
         } else {
-            // Handle PresentmentModel states
-            when (state.value) {
-                PresentmentModel.State.IDLE -> {
-                    showQrButton(deviceEngagement, presentmentModel, documentStore, documentList)
+
+            // Main app content
+            Column(
+                modifier = Modifier
+                    .safeContentPadding()
+                    .fillMaxSize(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                // BLE Permission Button
+                if (!blePermissionState.isGranted) {
+                    Button(
+                        onClick = {
+                            coroutineScope.launch {
+                                blePermissionState.launchPermissionRequest()
+                            }
+                        },
+                        modifier = Modifier.padding(bottom = 16.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary
+                        )
+                    ) {
+                        Text("Request BLE permissions")
+                    }
+                } else {
+                    Text(
+                        text = "✅ BLE permissions granted",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(bottom = 16.dp)
+                    )
+                }
+                Button(onClick = { showContent = !showContent }) {
+                    Text("Click me-ABC!")
                 }
 
-                PresentmentModel.State.WAITING_FOR_SOURCE,
-                PresentmentModel.State.PROCESSING,
-                PresentmentModel.State.WAITING_FOR_DOCUMENT_SELECTION,
-                PresentmentModel.State.WAITING_FOR_CONSENT,
-                PresentmentModel.State.COMPLETED -> {
-                    if (presentmentModel != null && presentmentSource != null && documentTypeRepository != null) {
-                        Presentment(
-                            appName = "Multipaz Getting Started Sample",
-                            appIconPainter = painterResource(Res.drawable.compose_multiplatform),
-                            presentmentModel = presentmentModel,
-                            presentmentSource = presentmentSource,
-                            documentTypeRepository = documentTypeRepository,
-                            onPresentmentComplete = {
-                                presentmentModel.reset()
-                            },
+                Button(
+                    onClick = {
+                        coroutineScope.launch {
+                            documentStore?.let { store ->
+                                val documentIds = store.listDocuments()
+                                val documents = mutableListOf<Document>()
+
+                                documentIds.forEach { documentId ->
+                                    store.lookupDocument(documentId)?.let { doc ->
+                                        documents.add(doc)
+                                    }
+                                }
+
+                                documentList = documents
+                                showDocuments = true
+                            }
+                        }
+                    },
+                    enabled = documentStore != null
+                ) {
+                    Text("Show Documents")
+                }
+
+                Button(
+                    onClick = {
+                        coroutineScope.launch {
+                            documentStore?.let { store ->
+                                val documentCount = documentList.size + 1
+                                val newDocument = store.createDocument(
+                                    displayName = "Document #$documentCount",
+                                    typeDisplayName = "Utopia Driving License",
+                                    cardArt = kotlinx.io.bytestring.ByteString(
+                                        getDrawableResourceBytes(
+                                            getSystemResourceEnvironment(),
+                                            Res.drawable.driving_license_card_art,
+                                        )
+                                    ),
+                                )
+
+                                // Refresh the document list if it's currently showing
+                                if (showDocuments) {
+                                    val documentIds = store.listDocuments()
+                                    val documents = mutableListOf<Document>()
+
+                                    documentIds.forEach { documentId ->
+                                        store.lookupDocument(documentId)?.let { doc ->
+                                            documents.add(doc)
+                                        }
+                                    }
+
+                                    documentList = documents
+                                }
+                            }
+                        }
+                    },
+                    enabled = documentStore != null
+                ) {
+                    Text("Create Document")
+                }
+
+                // Debug info
+                Text(
+                    text = "Debug: showDocumentDetail = $showDocumentDetail, selectedDocument = ${selectedDocument?.identifier ?: "null"}",
+                    style = MaterialTheme.typography.bodySmall
+                )
+
+                AnimatedVisibility(showDocuments) {
+                    Column(
+                        Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = "DOCUMENTS LIST (${documentList.size}) - UPDATED!",
+                            style = MaterialTheme.typography.headlineSmall
                         )
+
+                        LazyColumn(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            items(documentList) { doc ->
+                                Card(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp),
+                                    elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
+                                    onClick = {
+                                        selectedDocument = doc
+                                        showDocumentDetail = true
+                                        println("Document selected: ${doc.identifier}") // Debug log
+                                    }
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(16.dp)
+                                    ) {
+                                        Text(
+                                            text = doc.metadata.displayName!!,
+                                            style = MaterialTheme.typography.titleMedium,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+
+                                        Spacer(modifier = Modifier.height(4.dp))
+
+                                        Text(
+                                            text = doc.metadata.typeDisplayName!!,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+
+                                        Spacer(modifier = Modifier.height(8.dp))
+
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = "ID123: ${doc.identifier}",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+
+                                            Text(
+                                                text = "Tap for details →",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+
+                                        Spacer(modifier = Modifier.height(8.dp))
+
+                                        Text(
+                                            text = "🔥 DELETE BUTTON SHOULD BE HERE 🔥",
+                                            style = MaterialTheme.typography.bodyLarge,
+                                            color = MaterialTheme.colorScheme.error
+                                        )
+
+                                        Button(
+                                            onClick = {
+                                                println("Delete button clicked for document: ${doc.identifier}")
+                                                coroutineScope.launch {
+                                                    documentStore?.deleteDocument(doc.identifier)
+                                                    // Refresh the document list
+                                                    val documentIds =
+                                                        documentStore?.listDocuments()
+                                                            ?: emptyList()
+                                                    val documents =
+                                                        mutableListOf<Document>()
+
+                                                    documentIds.forEach { documentId ->
+                                                        documentStore?.lookupDocument(
+                                                            documentId
+                                                        )?.let { document ->
+                                                            documents.add(document)
+                                                        }
+                                                    }
+
+                                                    documentList = documents
+                                                }
+                                            },
+                                            modifier = Modifier.fillMaxWidth(),
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = MaterialTheme.colorScheme.error
+                                            )
+                                        ) {
+                                            Text("🔥 DELETE BUTTON 🔥")
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        Button(onClick = { showDocuments = false }) {
+                            Text("Hide Documents")
+                        }
                     }
                 }
 
-                else -> {
-                    // Main app content
+                AnimatedVisibility(showContent) {
+                    val greeting = remember { Greeting().greet() }
                     Column(
-                        modifier = Modifier
-                            .safeContentPadding()
-                            .fillMaxSize(),
-                        horizontalAlignment = Alignment.CenterHorizontally,
+                        Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        // BLE Permission Button
-                        if (!blePermissionState.isGranted) {
-                            Button(
-                                onClick = {
-                                    coroutineScope.launch {
-                                        blePermissionState.launchPermissionRequest()
-                                    }
-                                },
-                                modifier = Modifier.padding(bottom = 16.dp),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = MaterialTheme.colorScheme.primary
-                                )
-                            ) {
-                                Text("Request BLE permissions")
-                            }
-                        } else {
-                            Text(
-                                text = "✅ BLE permissions granted",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.padding(bottom = 16.dp)
-                            )
-                        }
-                        Button(onClick = { showContent = !showContent }) {
-                            Text("Click me-ABC!")
-                        }
-
-                        Button(
-                            onClick = {
-                                coroutineScope.launch {
-                                    documentStore?.let { store ->
-                                        val documentIds = store.listDocuments()
-                                        val documents = mutableListOf<Document>()
-
-                                        documentIds.forEach { documentId ->
-                                            store.lookupDocument(documentId)?.let { doc ->
-                                                documents.add(doc)
-                                            }
-                                        }
-
-                                        documentList = documents
-                                        showDocuments = true
-                                    }
-                                }
-                            },
-                            enabled = documentStore != null
-                        ) {
-                            Text("Show Documents")
-                        }
-
-                        Button(
-                            onClick = {
-                                coroutineScope.launch {
-                                    documentStore?.let { store ->
-                                        val documentCount = documentList.size + 1
-                                        val newDocument = store.createDocument(
-                                            displayName = "Document #$documentCount",
-                                            typeDisplayName = "Utopia Driving License",
-                                            cardArt = kotlinx.io.bytestring.ByteString(
-                                                getDrawableResourceBytes(
-                                                    getSystemResourceEnvironment(),
-                                                    Res.drawable.driving_license_card_art,
-                                                )
-                                            ),
-                                        )
-
-                                        // Refresh the document list if it's currently showing
-                                        if (showDocuments) {
-                                            val documentIds = store.listDocuments()
-                                            val documents = mutableListOf<Document>()
-
-                                            documentIds.forEach { documentId ->
-                                                store.lookupDocument(documentId)?.let { doc ->
-                                                    documents.add(doc)
-                                                }
-                                            }
-
-                                            documentList = documents
-                                        }
-                                    }
-                                }
-                            },
-                            enabled = documentStore != null
-                        ) {
-                            Text("Create Document")
-                        }
-
-                        // Debug info
-                        Text(
-                            text = "Debug: showDocumentDetail = $showDocumentDetail, selectedDocument = ${selectedDocument?.identifier ?: "null"}",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-
-                        AnimatedVisibility(showDocuments) {
-                            Column(
-                                Modifier.fillMaxWidth(),
-                                horizontalAlignment = Alignment.CenterHorizontally
-                            ) {
-                                Text(
-                                    text = "DOCUMENTS LIST (${documentList.size}) - UPDATED!",
-                                    style = MaterialTheme.typography.headlineSmall
-                                )
-
-                                LazyColumn(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    items(documentList) { doc ->
-                                        Card(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(horizontal = 16.dp),
-                                            elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
-                                            onClick = {
-                                                selectedDocument = doc
-                                                showDocumentDetail = true
-                                                println("Document selected: ${doc.identifier}") // Debug log
-                                            }
-                                        ) {
-                                            Column(
-                                                modifier = Modifier.padding(16.dp)
-                                            ) {
-                                                Text(
-                                                    text = doc.metadata.displayName!!,
-                                                    style = MaterialTheme.typography.titleMedium,
-                                                    color = MaterialTheme.colorScheme.primary
-                                                )
-
-                                                Spacer(modifier = Modifier.height(4.dp))
-
-                                                Text(
-                                                    text = doc.metadata.typeDisplayName!!,
-                                                    style = MaterialTheme.typography.bodyMedium,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                )
-
-                                                Spacer(modifier = Modifier.height(8.dp))
-
-                                                Row(
-                                                    modifier = Modifier.fillMaxWidth(),
-                                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                                    verticalAlignment = Alignment.CenterVertically
-                                                ) {
-                                                    Text(
-                                                        text = "ID123: ${doc.identifier}",
-                                                        style = MaterialTheme.typography.bodySmall,
-                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                    )
-
-                                                    Text(
-                                                        text = "Tap for details →",
-                                                        style = MaterialTheme.typography.bodySmall,
-                                                        color = MaterialTheme.colorScheme.primary
-                                                    )
-                                                }
-
-                                                Spacer(modifier = Modifier.height(8.dp))
-
-                                                Text(
-                                                    text = "🔥 DELETE BUTTON SHOULD BE HERE 🔥",
-                                                    style = MaterialTheme.typography.bodyLarge,
-                                                    color = MaterialTheme.colorScheme.error
-                                                )
-
-                                                Button(
-                                                    onClick = {
-                                                        println("Delete button clicked for document: ${doc.identifier}")
-                                                        coroutineScope.launch {
-                                                            documentStore?.deleteDocument(doc.identifier)
-                                                            // Refresh the document list
-                                                            val documentIds =
-                                                                documentStore?.listDocuments()
-                                                                    ?: emptyList()
-                                                            val documents =
-                                                                mutableListOf<Document>()
-
-                                                            documentIds.forEach { documentId ->
-                                                                documentStore?.lookupDocument(
-                                                                    documentId
-                                                                )?.let { document ->
-                                                                    documents.add(document)
-                                                                }
-                                                            }
-
-                                                            documentList = documents
-                                                        }
-                                                    },
-                                                    modifier = Modifier.fillMaxWidth(),
-                                                    colors = ButtonDefaults.buttonColors(
-                                                        containerColor = MaterialTheme.colorScheme.error
-                                                    )
-                                                ) {
-                                                    Text("🔥 DELETE BUTTON 🔥")
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-
-                                Spacer(modifier = Modifier.height(16.dp))
-
-                                Button(onClick = { showDocuments = false }) {
-                                    Text("Hide Documents")
-                                }
-                            }
-                        }
-
-                        AnimatedVisibility(showContent) {
-                            val greeting = remember { Greeting().greet() }
-                            Column(
-                                Modifier.fillMaxWidth(),
-                                horizontalAlignment = Alignment.CenterHorizontally
-                            ) {
-                                Image(painterResource(Res.drawable.compose_multiplatform), null)
-                                Text("Compose: $greeting")
-                            }
-                        }
+                        Image(painterResource(Res.drawable.compose_multiplatform), null)
+                        Text("Compose: $greeting")
                     }
                 }
             }
+
+            PromptDialogs(promptModel)
         }
-        
-        PromptDialogs(promptModel)
     }
 }

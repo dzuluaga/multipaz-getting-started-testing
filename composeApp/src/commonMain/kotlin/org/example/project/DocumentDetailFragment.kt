@@ -3,7 +3,6 @@ package org.example.project
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -11,7 +10,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeContentPadding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -21,6 +19,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -32,11 +32,35 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.painter.BitmapPainter
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
+import kotlinx.io.bytestring.ByteString
 import org.example.project.composeapp.generated.resources.Res
 import org.example.project.composeapp.generated.resources.compose_multiplatform
 import org.jetbrains.compose.resources.painterResource
+import org.multipaz.cbor.Simple
+import org.multipaz.compose.presentment.Presentment
+import org.multipaz.compose.qrcode.generateQrCode
 import org.multipaz.credential.Credential
+import org.multipaz.crypto.Crypto
+import org.multipaz.crypto.EcCurve
 import org.multipaz.document.Document
+import org.multipaz.document.DocumentStore
+import org.multipaz.documenttype.DocumentTypeRepository
+import org.multipaz.documenttype.knowntypes.DrivingLicense
+import org.multipaz.mdoc.connectionmethod.MdocConnectionMethodBle
+import org.multipaz.mdoc.engagement.EngagementGenerator
+import org.multipaz.mdoc.role.MdocRole
+import org.multipaz.mdoc.transport.MdocTransportFactory
+import org.multipaz.mdoc.transport.MdocTransportOptions
+import org.multipaz.mdoc.transport.advertise
+import org.multipaz.mdoc.transport.waitForConnection
+import org.multipaz.models.presentment.MdocPresentmentMechanism
+import org.multipaz.models.presentment.PresentmentModel
+import org.multipaz.models.presentment.PresentmentSource
+import org.multipaz.request.Request
+import org.multipaz.trustmanagement.TrustManager
+import org.multipaz.util.UUID
+import org.multipaz.util.toBase64Url
 
 // Expect function for platform-specific image decoding
 expect fun decodeImageFromBytes(bytes: ByteArray): ImageBitmap?
@@ -44,11 +68,105 @@ expect fun decodeImageFromBytes(bytes: ByteArray): ImageBitmap?
 @Composable
 fun DocumentDetailFragment(
     document: Document,
-    onClose: () -> Unit
+    onClose: () -> Unit,
+    presentmentModel: PresentmentModel,
+    documentStore: DocumentStore,
+    documentTypeRepository: DocumentTypeRepository,
+    readerTrustManager: TrustManager?
 ) {
     var credentials by remember { mutableStateOf<List<Credential>>(emptyList()) }
     var cardArtBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
-    
+    val state = presentmentModel?.state?.collectAsState()
+    val deviceEngagement = remember { mutableStateOf<ByteString?>(null) }
+    var presentmentSource: PresentmentSource? = null
+    val documentTypeRepository = DocumentTypeRepository().apply {
+        addDocumentType(DrivingLicense.getDocumentType())
+    }
+
+    @Composable
+    fun showQrButton(showQrCode: MutableState<ByteString?>) {
+        Column(
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Button(onClick = {
+                presentmentModel.reset()
+                presentmentModel.setConnecting()
+                presentmentModel.presentmentScope.launch() {
+                    val connectionMethods = listOf(
+                        MdocConnectionMethodBle(
+                            supportsPeripheralServerMode = false,
+                            supportsCentralClientMode = true,
+                            peripheralServerModeUuid = null,
+                            centralClientModeUuid = UUID.randomUUID(),
+                        )
+                    )
+                    val eDeviceKey = Crypto.createEcPrivateKey(EcCurve.P256)
+                    val advertisedTransports = connectionMethods.advertise(
+                        role = MdocRole.MDOC,
+                        transportFactory = MdocTransportFactory.Default,
+                        options = MdocTransportOptions(bleUseL2CAP = true),
+                    )
+                    val engagementGenerator = EngagementGenerator(
+                        eSenderKey = eDeviceKey.publicKey,
+                        version = "1.0"
+                    )
+                    engagementGenerator.addConnectionMethods(advertisedTransports.map {
+                        it.connectionMethod
+                    })
+                    val encodedDeviceEngagement = ByteString(engagementGenerator.generate())
+                    showQrCode.value = encodedDeviceEngagement
+                    val transport = advertisedTransports.waitForConnection(
+                        eSenderKey = eDeviceKey.publicKey,
+                        coroutineScope = presentmentModel.presentmentScope
+                    )
+                    presentmentModel.setMechanism(
+                        MdocPresentmentMechanism(
+                            transport = transport,
+                            eDeviceKey = eDeviceKey,
+                            encodedDeviceEngagement = encodedDeviceEngagement,
+                            handover = Simple.NULL,
+                            engagementDuration = null,
+                            allowMultipleRequests = false
+                        )
+                    )
+                    showQrCode.value = null
+                }
+            }) {
+                Text("Present mDL via QR")
+            }
+        }
+    }
+    @Composable
+    fun showQrCode(deviceEngagement: MutableState<ByteString?>) {
+        Column(
+            modifier = Modifier.fillMaxSize().padding(16.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            println("deviceEngagement showQrCode: ${deviceEngagement.value}")
+            if (deviceEngagement.value != null) {
+                val mdocUrl = "mdoc:" + deviceEngagement.value!!.toByteArray().toBase64Url()
+                val qrCodeBitmap = remember { generateQrCode(mdocUrl) }
+                Text(text = "Present QR code to mdoc reader")
+                Image(
+                    modifier = Modifier.fillMaxWidth(),
+                    bitmap = qrCodeBitmap,
+                    contentDescription = null,
+                    contentScale = ContentScale.FillWidth
+                )
+                Button(
+                    onClick = {
+                        presentmentModel.reset()
+                    }
+                ) {
+                    Text("Cancel")
+                }
+            }
+        }
+    }
+
     LaunchedEffect(document) {
         credentials = document.getCredentials()
         // Convert card art ByteString to ImageBitmap
@@ -88,6 +206,67 @@ fun DocumentDetailFragment(
             )
             
             Spacer(modifier = Modifier.width(80.dp)) // Balance the layout
+        }
+        /*Row {
+            Text("Tap for details →")
+            showQrButton(deviceEngagement)
+            *//*Button(onClick = {
+                // Generate QR code for this document
+                presentmentModel?.reset()
+                presentmentModel?.setConnecting()
+            }) {
+                Text("Present")
+            }*//*
+        }*/
+
+        presentmentSource = object : PresentmentSource(
+            documentStore = documentStore,
+            documentTypeRepository = documentTypeRepository!!,
+            readerTrustManager = readerTrustManager!!
+        ) {
+            override suspend fun selectCredential(
+                document: Document?,
+                request: Request,
+                keyAgreementPossible: List<EcCurve>
+            ): Credential? {
+                // Return only the credential from the specific document
+                return document?.let { docId ->
+                    documentStore.lookupDocument(document.identifier)
+                        ?.getCertifiedCredentials()
+                        ?.firstOrNull()
+                }
+            }
+        }
+
+
+        when (state?.value) {
+            PresentmentModel.State.IDLE -> {
+                showQrButton(deviceEngagement)
+            }
+
+            PresentmentModel.State.CONNECTING -> {
+                println("deviceEngagement CONNECTING: ${deviceEngagement.value}")
+                showQrCode(deviceEngagement)
+            }
+
+            PresentmentModel.State.WAITING_FOR_SOURCE,
+            PresentmentModel.State.PROCESSING,
+            PresentmentModel.State.WAITING_FOR_DOCUMENT_SELECTION,
+            PresentmentModel.State.WAITING_FOR_CONSENT,
+            PresentmentModel.State.COMPLETED -> {
+                Presentment(
+                    appName = "Multipaz Getting Started Sample",
+                    appIconPainter = painterResource(Res.drawable.compose_multiplatform),
+                    presentmentModel = presentmentModel,
+                    presentmentSource = presentmentSource!!,
+                    documentTypeRepository = documentTypeRepository!!,
+                    onPresentmentComplete = {
+                        presentmentModel.reset()
+                    },
+                )
+            }
+            null -> {
+            }
         }
         
         // Main content in a scrollable card
