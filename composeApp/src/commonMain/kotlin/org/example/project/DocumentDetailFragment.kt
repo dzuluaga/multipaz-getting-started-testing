@@ -1,7 +1,9 @@
 package org.example.project
 
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -28,6 +30,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.painter.BitmapPainter
 import androidx.compose.ui.layout.ContentScale
@@ -57,6 +60,7 @@ import org.multipaz.mdoc.transport.waitForConnection
 import org.multipaz.models.presentment.MdocPresentmentMechanism
 import org.multipaz.models.presentment.PresentmentModel
 import org.multipaz.models.presentment.PresentmentSource
+import org.multipaz.models.presentment.SimplePresentmentSource
 import org.multipaz.request.Request
 import org.multipaz.trustmanagement.TrustManager
 import org.multipaz.util.UUID
@@ -79,6 +83,7 @@ fun DocumentDetailFragment(
     val state = presentmentModel?.state?.collectAsState()
     val deviceEngagement = remember { mutableStateOf<ByteString?>(null) }
     var presentmentSource: PresentmentSource? = null
+    var showQrOverlay by remember { mutableStateOf(false) }
     val documentTypeRepository = DocumentTypeRepository().apply {
         addDocumentType(DrivingLicense.getDocumentType())
     }
@@ -207,19 +212,58 @@ fun DocumentDetailFragment(
             
             Spacer(modifier = Modifier.width(80.dp)) // Balance the layout
         }
-        /*Row {
-            Text("Tap for details →")
-            showQrButton(deviceEngagement)
-            *//*Button(onClick = {
-                // Generate QR code for this document
-                presentmentModel?.reset()
-                presentmentModel?.setConnecting()
-            }) {
-                Text("Present")
-            }*//*
-        }*/
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("Document Actions:")
+            Button(
+                onClick = {
+                    showQrOverlay = true
+                    // Generate QR code
+                    presentmentModel.reset()
+                    presentmentModel.setConnecting()
+                    presentmentModel.presentmentScope.launch() {
+                        val connectionMethods = listOf(
+                            MdocConnectionMethodBle(
+                                supportsPeripheralServerMode = false,
+                                supportsCentralClientMode = true,
+                                peripheralServerModeUuid = null,
+                                centralClientModeUuid = UUID.randomUUID(),
+                            )
+                        )
+                        val eDeviceKey = Crypto.createEcPrivateKey(EcCurve.P256)
+                        val advertisedTransports = connectionMethods.advertise(
+                            role = MdocRole.MDOC,
+                            transportFactory = MdocTransportFactory.Default,
+                            options = MdocTransportOptions(bleUseL2CAP = true),
+                        )
+                        val engagementGenerator = EngagementGenerator(
+                            eSenderKey = eDeviceKey.publicKey,
+                            version = "1.0"
+                        )
+                        engagementGenerator.addConnectionMethods(advertisedTransports.map {
+                            it.connectionMethod
+                        })
+                        val encodedDeviceEngagement = ByteString(engagementGenerator.generate())
+                        deviceEngagement.value = encodedDeviceEngagement
+                    }
+                }
+            ) {
+                Text("Present via QR")
+            }
+        }
 
-        presentmentSource = object : PresentmentSource(
+        presentmentSource = SimplePresentmentSource(
+            documentStore = documentStore,
+            documentTypeRepository = documentTypeRepository,
+            readerTrustManager = readerTrustManager!!,
+            preferSignatureToKeyAgreement = true,
+            domainMdocSignature = "mdoc",
+        )
+
+        /*presentmentSource = object : PresentmentSource(
             documentStore = documentStore,
             documentTypeRepository = documentTypeRepository!!,
             readerTrustManager = readerTrustManager!!
@@ -231,12 +275,15 @@ fun DocumentDetailFragment(
             ): Credential? {
                 // Return only the credential from the specific document
                 return document?.let { docId ->
-                    documentStore.lookupDocument(document.identifier)
+                    println("Selecting credential for document: ${docId.identifier}")
+                    val credential = documentStore.lookupDocument(document.identifier)
                         ?.getCertifiedCredentials()
                         ?.firstOrNull()
+                    println("Selected credential: ${credential?.document?.identifier}")
+                    return credential
                 }
             }
-        }
+        }*/
 
 
         when (state?.value) {
@@ -254,6 +301,7 @@ fun DocumentDetailFragment(
             PresentmentModel.State.WAITING_FOR_DOCUMENT_SELECTION,
             PresentmentModel.State.WAITING_FOR_CONSENT,
             PresentmentModel.State.COMPLETED -> {
+                println("deviceEngagement COMPLETED: ${deviceEngagement.value}")
                 Presentment(
                     appName = "Multipaz Getting Started Sample",
                     appIconPainter = painterResource(Res.drawable.compose_multiplatform),
@@ -409,6 +457,61 @@ fun DocumentDetailFragment(
                     ) {
                         Text("Close")
                     }
+                }
+            }
+        }
+    }
+    
+    // QR Code Overlay
+    if (showQrOverlay) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.8f))
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                if (deviceEngagement.value != null) {
+                    val mdocUrl = "mdoc:" + deviceEngagement.value!!.toByteArray().toBase64Url()
+                    val qrCodeBitmap = remember { generateQrCode(mdocUrl) }
+                    
+                    Text(
+                        text = "Present QR code to mdoc reader",
+                        style = MaterialTheme.typography.headlineSmall,
+                        color = Color.White,
+                        modifier = Modifier.padding(bottom = 16.dp)
+                    )
+                    
+                    Image(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        bitmap = qrCodeBitmap,
+                        contentDescription = "QR Code",
+                        contentScale = ContentScale.FillWidth
+                    )
+                    
+                    Button(
+                        onClick = {
+                            showQrOverlay = false
+                            deviceEngagement.value = null
+                            presentmentModel.reset()
+                        },
+                        modifier = Modifier.padding(top = 16.dp)
+                    ) {
+                        Text("Close QR Code")
+                    }
+                } else {
+                    Text(
+                        text = "Generating QR Code...",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = Color.White
+                    )
                 }
             }
         }

@@ -50,6 +50,7 @@ import org.multipaz.crypto.X509Cert
 import org.multipaz.crypto.Algorithm
 import org.multipaz.crypto.Crypto
 import org.multipaz.crypto.EcCurve
+import org.multipaz.crypto.EcPrivateKey
 import org.multipaz.crypto.X500Name
 import org.multipaz.crypto.X509CertChain
 import org.multipaz.mdoc.util.MdocUtil
@@ -144,15 +145,32 @@ fun App(promptModel: PromptModel) {
         val validUntil = now + 365.days
 
         // IACA Certificate
-        val iacaKey = Crypto.createEcPrivateKey(EcCurve.P256)
-        val iacaCert = MdocUtil.generateIacaCertificate(
-            iacaKey = iacaKey,
-            subject = X500Name.fromName(name = "CN=Test IACA Key"),
-            serial = ASN1Integer.fromRandom(numBits = 128),
-            validFrom = validFrom,
-            validUntil = validUntil,
-            issuerAltNameUrl = "https://issuer.example.com",
-            crlUrl = "https://issuer.example.com/crl"
+        val iacaCert = X509Cert.fromPem(
+            """
+                        -----BEGIN CERTIFICATE-----
+                        MIICYzCCAemgAwIBAgIQ36kOae8cfvOqQ+mO4YhnpDAKBggqhkjOPQQDAzAuMQswCQYDVQQGDAJV
+                        UzEfMB0GA1UEAwwWT1dGIE11bHRpcGF6IFRFU1QgSUFDQTAeFw0yNTA3MjQxMTE3MTlaFw0zMDA3
+                        MjQxMTE3MTlaMC4xCzAJBgNVBAYMAlVTMR8wHQYDVQQDDBZPV0YgTXVsdGlwYXogVEVTVCBJQUNB
+                        MHYwEAYHKoZIzj0CAQYFK4EEACIDYgAEQQJf9BH+fJytVI4K4nQvHJAfzapvuT6jo+19fo+o9+zV
+                        PFnOYtsbPXB5sPeuMMv5ZkQGmn9yWCgpbZHAS2pJ/eJXAcLp9uH8BGo6pYhkPomx9cwgMX0YUXoB
+                        4wiO6w9eo4HLMIHIMA4GA1UdDwEB/wQEAwIBBjASBgNVHRMBAf8ECDAGAQH/AgEAMC0GA1UdEgQm
+                        MCSGImh0dHBzOi8vaXNzdWVyLmV4YW1wbGUuY29tL3dlYnNpdGUwMwYDVR0fBCwwKjAooCagJIYi
+                        aHR0cHM6Ly9pc3N1ZXIuZXhhbXBsZS5jb20vY3JsLmNybDAdBgNVHQ4EFgQUPbetw5QkxGKjazN0
+                        qI9YfaexD+0wHwYDVR0jBBgwFoAUPbetw5QkxGKjazN0qI9YfaexD+0wCgYIKoZIzj0EAwMDaAAw
+                        ZQIxAKizj2YexKf1+CTBCOV4ehyiUU5MSi9iPScW32+halSCVUtbmW63fpG+37obLGivegIwb38g
+                        xhIRxDdIk1CBVsqANCFUvdBuSoORRV5928xo/B9he5ZFyb8b6UauJS70AMD8
+                        -----END CERTIFICATE-----
+                    """.trimIndent()
+        )
+
+        val iacaKey = EcPrivateKey.fromPem(
+            """
+                        -----BEGIN PRIVATE KEY-----
+                        MFcCAQAwEAYHKoZIzj0CAQYFK4EEACIEQDA+AgEBBDBEPQnb6xr3p0XKGucrf3iVI/sDF2fc55vs
+                        T31kxam8x8ocKu4ETouTZM+DZKu0cD+gBwYFK4EEACI=
+                        -----END PRIVATE KEY-----
+                    """.trimIndent(),
+            iacaCert.ecPublicKey
         )
 
         // Document Signing (DS) Certificate
