@@ -42,6 +42,7 @@ import org.example.project.composeapp.generated.resources.compose_multiplatform
 import org.jetbrains.compose.resources.painterResource
 import org.multipaz.cbor.Simple
 import org.multipaz.compose.presentment.Presentment
+import org.multipaz.compose.prompt.PromptDialogs
 import org.multipaz.compose.qrcode.generateQrCode
 import org.multipaz.credential.Credential
 import org.multipaz.crypto.Crypto
@@ -61,6 +62,7 @@ import org.multipaz.models.presentment.MdocPresentmentMechanism
 import org.multipaz.models.presentment.PresentmentModel
 import org.multipaz.models.presentment.PresentmentSource
 import org.multipaz.models.presentment.SimplePresentmentSource
+import org.multipaz.prompt.PromptModel
 import org.multipaz.request.Request
 import org.multipaz.trustmanagement.TrustManager
 import org.multipaz.util.UUID
@@ -76,7 +78,8 @@ fun DocumentDetailFragment(
     presentmentModel: PresentmentModel,
     documentStore: DocumentStore,
     documentTypeRepository: DocumentTypeRepository,
-    readerTrustManager: TrustManager?
+    readerTrustManager: TrustManager?,
+    promptModel: PromptModel
 ) {
     var credentials by remember { mutableStateOf<List<Credential>>(emptyList()) }
     var cardArtBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
@@ -183,6 +186,20 @@ fun DocumentDetailFragment(
             // Handle any decoding errors
             cardArtBitmap = null
         }
+        
+        // Debug: Check what documents are in the store
+        println("=== DOCUMENT STORE DEBUG ===")
+        val allDocuments = documentStore.listDocuments()
+        println("Total documents in store: ${allDocuments.size}")
+        allDocuments.forEach { docId ->
+            val doc = documentStore.lookupDocument(docId)
+            println("Document ID: $docId")
+            println("  - Document Type: ${doc?.metadata?.typeDisplayName}")
+            println("  - Display Name: ${doc?.metadata?.displayName}")
+            println("  - Type Display Name: ${doc?.metadata?.typeDisplayName}")
+            println("  - Has credentials: ${doc?.getCertifiedCredentials()?.isNotEmpty()}")
+        }
+        println("=== END DOCUMENT STORE DEBUG ===")
     }
     
     Column(
@@ -212,58 +229,16 @@ fun DocumentDetailFragment(
             
             Spacer(modifier = Modifier.width(80.dp)) // Balance the layout
         }
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text("Document Actions:")
-            Button(
-                onClick = {
-                    showQrOverlay = true
-                    // Generate QR code
-                    presentmentModel.reset()
-                    presentmentModel.setConnecting()
-                    presentmentModel.presentmentScope.launch() {
-                        val connectionMethods = listOf(
-                            MdocConnectionMethodBle(
-                                supportsPeripheralServerMode = false,
-                                supportsCentralClientMode = true,
-                                peripheralServerModeUuid = null,
-                                centralClientModeUuid = UUID.randomUUID(),
-                            )
-                        )
-                        val eDeviceKey = Crypto.createEcPrivateKey(EcCurve.P256)
-                        val advertisedTransports = connectionMethods.advertise(
-                            role = MdocRole.MDOC,
-                            transportFactory = MdocTransportFactory.Default,
-                            options = MdocTransportOptions(bleUseL2CAP = true),
-                        )
-                        val engagementGenerator = EngagementGenerator(
-                            eSenderKey = eDeviceKey.publicKey,
-                            version = "1.0"
-                        )
-                        engagementGenerator.addConnectionMethods(advertisedTransports.map {
-                            it.connectionMethod
-                        })
-                        val encodedDeviceEngagement = ByteString(engagementGenerator.generate())
-                        deviceEngagement.value = encodedDeviceEngagement
-                    }
-                }
-            ) {
-                Text("Present via QR")
-            }
-        }
 
-        presentmentSource = SimplePresentmentSource(
+        /*presentmentSource = SimplePresentmentSource(
             documentStore = documentStore,
             documentTypeRepository = documentTypeRepository,
             readerTrustManager = readerTrustManager!!,
             preferSignatureToKeyAgreement = true,
             domainMdocSignature = "mdoc",
-        )
+        )*/
 
-        /*presentmentSource = object : PresentmentSource(
+        presentmentSource = object : PresentmentSource(
             documentStore = documentStore,
             documentTypeRepository = documentTypeRepository!!,
             readerTrustManager = readerTrustManager!!
@@ -273,9 +248,39 @@ fun DocumentDetailFragment(
                 request: Request,
                 keyAgreementPossible: List<EcCurve>
             ): Credential? {
-                // Return only the credential from the specific document
+                // Debug: Print request information
+                println("=== PRESENTMENT DEBUG ===")
+                println("Request type: ${request::class.simpleName}")
+                if (request is org.multipaz.request.MdocRequest) {
+                    println("MdocRequest docTypes: ${request.docType}")
+                }
+                
+                // Debug: Print all documents in store
+                val allDocuments = documentStore.listDocuments()
+                println("Total documents in store: ${allDocuments.size}")
+                allDocuments.forEach { docId ->
+                    val doc = documentStore.lookupDocument(docId)
+                    println("Document ID: $docId")
+                    println("  - Document Type: ${doc?.metadata?.typeDisplayName}")
+                    println("  - Display Name: ${doc?.metadata?.displayName}")
+                    println("  - Type Display Name: ${doc?.metadata?.typeDisplayName}")
+                    println("  - Has credentials: ${doc?.getCertifiedCredentials()?.isNotEmpty()}")
+                }
+                
+                // For testing: randomly pick one document from the store
+                if (allDocuments.isNotEmpty()) {
+                    val randomDocument = allDocuments.random()
+                    println("Randomly selected document for testing: ${randomDocument}")
+                    val credential = documentStore.lookupDocument(randomDocument)
+                        ?.getCertifiedCredentials()
+                        ?.firstOrNull()
+                    println("Selected credential: ${credential?.document?.identifier}")
+                    return credential
+                }
+                
+                // Fallback to original behavior if no documents available
                 return document?.let { docId ->
-                    println("Selecting credential for document: ${docId.identifier}")
+                    println("Fallback: Selecting credential for document: ${docId.identifier}")
                     val credential = documentStore.lookupDocument(document.identifier)
                         ?.getCertifiedCredentials()
                         ?.firstOrNull()
@@ -283,7 +288,7 @@ fun DocumentDetailFragment(
                     return credential
                 }
             }
-        }*/
+        }
 
 
         when (state?.value) {
@@ -302,6 +307,32 @@ fun DocumentDetailFragment(
             PresentmentModel.State.WAITING_FOR_CONSENT,
             PresentmentModel.State.COMPLETED -> {
                 println("deviceEngagement COMPLETED: ${deviceEngagement.value}")
+                
+                // Automatically select a document during the WAITING_FOR_DOCUMENT_SELECTION state
+                if (state.value == PresentmentModel.State.WAITING_FOR_DOCUMENT_SELECTION) {
+                    LaunchedEffect(Unit) {
+                        val allDocuments = documentStore.listDocuments()
+                        if (allDocuments.isNotEmpty()) {
+                            val randomDocument: String = allDocuments.random()
+                            println("Automatically selecting document: ${randomDocument}")
+                            val document = documentStore.lookupDocument(randomDocument)
+                            presentmentModel.documentSelected(document)
+                        } else {
+                            println("No documents available, canceling presentment")
+                            presentmentModel.documentSelected(null)
+                        }
+                    }
+                    
+                    // Show a message while automatically selecting
+                    Column(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.Center,
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text("Document selected automatically, processing...")
+                    }
+                }
+                
                 Presentment(
                     appName = "Multipaz Getting Started Sample",
                     appIconPainter = painterResource(Res.drawable.compose_multiplatform),
@@ -311,6 +342,7 @@ fun DocumentDetailFragment(
                     onPresentmentComplete = {
                         presentmentModel.reset()
                     },
+                    onlyShowConsentPrompt = true
                 )
             }
             null -> {
@@ -516,4 +548,7 @@ fun DocumentDetailFragment(
             }
         }
     }
+    
+    // Add PromptDialogs to ensure PromptModel is bound to UI
+    PromptDialogs(promptModel)
 } 
