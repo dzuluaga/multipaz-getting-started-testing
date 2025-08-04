@@ -202,6 +202,20 @@ fun DocumentDetailFragment(
         println("=== END DOCUMENT STORE DEBUG ===")
     }
     
+    // Debug: Monitor PresentmentModel state changes
+    LaunchedEffect(state?.value) {
+        println("DocumentDetailFragment: Current state = ${state?.value}")
+        println("DocumentDetailFragment: presentmentModel is null = ${presentmentModel == null}")
+        println("DocumentDetailFragment: State change detected - previous state might have been: ${state?.value}")
+    }
+    
+    // Debug: Monitor when the fragment is first composed
+    LaunchedEffect(Unit) {
+        println("DocumentDetailFragment: Fragment first composed")
+        println("DocumentDetailFragment: Initial state = ${state?.value}")
+        println("DocumentDetailFragment: presentmentModel = ${presentmentModel}")
+    }
+    
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -215,7 +229,10 @@ fun DocumentDetailFragment(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Button(
-                onClick = onClose,
+                onClick = {
+                    presentmentModel.reset()
+                    onClose()
+                },
                 modifier = Modifier.padding(bottom = 16.dp)
             ) {
                 Text("← Back")
@@ -293,10 +310,161 @@ fun DocumentDetailFragment(
 
         when (state?.value) {
             PresentmentModel.State.IDLE -> {
+                println("DocumentDetailFragment: Entering IDLE branch - showing document details and QR button")
+                
+                // Main content in a scrollable card
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(24.dp)
+                    ) {
+                        // Driving License Image
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(200.dp)
+                                .padding(bottom = 24.dp),
+                            elevation = CardDefaults.cardElevation(defaultElevation = 6.dp),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Image(
+                                painter = if (cardArtBitmap != null) {
+                                    BitmapPainter(cardArtBitmap!!)
+                                } else {
+                                    painterResource(Res.drawable.compose_multiplatform)
+                                },
+                                contentDescription = "Driving License Card",
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .clip(RoundedCornerShape(12.dp)),
+                                contentScale = ContentScale.Crop
+                            )
+                        }
+                        
+                        // Display Name
+                        Text(
+                            text = "Display Name",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = document.metadata.displayName!!,
+                            style = MaterialTheme.typography.headlineSmall,
+                            modifier = Modifier.padding(bottom = 16.dp)
+                        )
+                        
+                        // Type
+                        Text(
+                            text = "Document Type",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = document.metadata.typeDisplayName!!,
+                            style = MaterialTheme.typography.bodyLarge,
+                            modifier = Modifier.padding(bottom = 16.dp)
+                        )
+                        
+                        // Document ID
+                        Text(
+                            text = "Document ID",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = document.identifier,
+                            style = MaterialTheme.typography.bodyLarge,
+                            modifier = Modifier.padding(bottom = 16.dp)
+                        )
+                        
+                        // Credentials Section
+                        Text(
+                            text = "Associated Credentials",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        
+                        if (credentials.isEmpty()) {
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 8.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                                )
+                            ) {
+                                Text(
+                                    text = "No credentials found for this document",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(16.dp)
+                                )
+                            }
+                        } else {
+                            Text(
+                                text = "${credentials.size} credential(s) found:",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(bottom = 8.dp)
+                            )
+                            
+                            credentials.forEach { credential ->
+                                Card(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 4.dp),
+                                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(16.dp)
+                                    ) {
+                                        Text(
+                                            text = credential.document.metadata.displayName!!,
+                                            style = MaterialTheme.typography.bodyLarge,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                        Text(
+                                            text = "Type: ${credential.document.metadata.typeDisplayName}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        
+                        Spacer(modifier = Modifier.weight(1f))
+                        
+                        // Action buttons
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(
+                                onClick = {
+                                    presentmentModel.reset()
+                                    onClose()
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Close")
+                            }
+                        }
+                    }
+                }
+                
+                // Show QR button at the bottom
                 showQrButton(deviceEngagement)
             }
 
             PresentmentModel.State.CONNECTING -> {
+                println("DocumentDetailFragment: Entering CONNECTING branch")
                 println("deviceEngagement CONNECTING: ${deviceEngagement.value}")
                 showQrCode(deviceEngagement)
             }
@@ -306,6 +474,8 @@ fun DocumentDetailFragment(
             PresentmentModel.State.WAITING_FOR_DOCUMENT_SELECTION,
             PresentmentModel.State.WAITING_FOR_CONSENT,
             PresentmentModel.State.COMPLETED -> {
+                println("DocumentDetailFragment: Entering PROCESSING/WAITING/COMPLETED branch")
+                println("DocumentDetailFragment: Current state = ${state?.value}")
                 println("deviceEngagement COMPLETED: ${deviceEngagement.value}")
                 
                 // Automatically select a document during the WAITING_FOR_DOCUMENT_SELECTION state
@@ -346,150 +516,7 @@ fun DocumentDetailFragment(
                 )
             }
             null -> {
-            }
-        }
-        
-        // Main content in a scrollable card
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f),
-            elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(24.dp)
-            ) {
-                // Driving License Image
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(200.dp)
-                        .padding(bottom = 24.dp),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 6.dp),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Image(
-                        painter = if (cardArtBitmap != null) {
-                            BitmapPainter(cardArtBitmap!!)
-                        } else {
-                            painterResource(Res.drawable.compose_multiplatform)
-                        },
-                        contentDescription = "Driving License Card",
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .clip(RoundedCornerShape(12.dp)),
-                        contentScale = ContentScale.Crop
-                    )
-                }
-                
-                // Display Name
-                Text(
-                    text = "Display Name",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Text(
-                    text = document.metadata.displayName!!,
-                    style = MaterialTheme.typography.headlineSmall,
-                    modifier = Modifier.padding(bottom = 16.dp)
-                )
-                
-                // Type
-                Text(
-                    text = "Document Type",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Text(
-                    text = document.metadata.typeDisplayName!!,
-                    style = MaterialTheme.typography.bodyLarge,
-                    modifier = Modifier.padding(bottom = 16.dp)
-                )
-                
-                // Document ID
-                Text(
-                    text = "Document ID",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Text(
-                    text = document.identifier,
-                    style = MaterialTheme.typography.bodyLarge,
-                    modifier = Modifier.padding(bottom = 16.dp)
-                )
-                
-                // Credentials Section
-                Text(
-                    text = "Associated Credentials",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                
-                if (credentials.isEmpty()) {
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 8.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.surfaceVariant
-                        )
-                    ) {
-                        Text(
-                            text = "No credentials found for this document",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(16.dp)
-                        )
-                    }
-                } else {
-                    Text(
-                        text = "${credentials.size} credential(s) found:",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(bottom = 8.dp)
-                    )
-                    
-                    credentials.forEach { credential ->
-                        Card(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 4.dp),
-                            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(16.dp)
-                            ) {
-                                Text(
-                                    text = credential.document.metadata.displayName!!,
-                                    style = MaterialTheme.typography.bodyLarge,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                                Text(
-                                    text = "Type: ${credential.document.metadata.typeDisplayName}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-                    }
-                }
-                
-                Spacer(modifier = Modifier.weight(1f))
-                
-                // Action buttons
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Button(
-                        onClick = onClose,
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text("Close")
-                    }
-                }
+                println("DocumentDetailFragment: Entering null branch - state is null")
             }
         }
     }
