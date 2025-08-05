@@ -24,7 +24,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
-import kotlinx.io.bytestring.ByteString
 import org.example.project.composeapp.generated.resources.Res
 import org.example.project.composeapp.generated.resources.compose_multiplatform
 import org.example.project.composeapp.generated.resources.driving_license_card_art
@@ -44,8 +43,6 @@ import org.multipaz.securearea.SecureAreaRepository
 import kotlinx.io.bytestring.encodeToByteString
 import org.multipaz.asn1.ASN1Integer
 import org.multipaz.compose.permissions.rememberBluetoothPermissionState
-import org.multipaz.compose.presentment.Presentment
-import org.multipaz.credential.Credential
 import org.multipaz.crypto.X509Cert
 import org.multipaz.crypto.Algorithm
 import org.multipaz.crypto.EcCurve
@@ -57,8 +54,6 @@ import org.multipaz.securearea.CreateKeySettings
 import org.multipaz.trustmanagement.TrustManager
 import org.multipaz.trustmanagement.TrustPoint
 import org.multipaz.models.presentment.PresentmentModel
-import org.multipaz.models.presentment.PresentmentSource
-import org.multipaz.request.Request
 import org.multipaz.securearea.SecureArea
 import org.multipaz.util.fromHex
 import kotlin.time.Duration.Companion.days
@@ -73,15 +68,22 @@ import org.multipaz.cbor.buildCborArray
 import org.multipaz.cbor.addCborMap
 import org.multipaz.cbor.Tstr
 import kotlinx.datetime.LocalDate
-import org.example.project.composeapp.generated.resources.portrait
 import org.multipaz.cbor.toDataItem
 import org.multipaz.cbor.toDataItemFullDate
 import org.multipaz.cose.Cose
 import org.multipaz.cose.CoseLabel
 import org.multipaz.cose.CoseNumberLabel
 import org.multipaz.mdoc.mso.MobileSecurityObjectGenerator
-import org.multipaz.util.fromBase64Url
 import kotlinx.datetime.Instant
+import org.example.project.composeapp.generated.resources.driver_license_male_1
+import org.example.project.composeapp.generated.resources.driver_license_male_2
+import org.example.project.composeapp.generated.resources.driver_license_male_3
+import org.example.project.composeapp.generated.resources.driver_license_male_4
+import org.example.project.composeapp.generated.resources.driver_license_woman_1
+import org.example.project.composeapp.generated.resources.driver_license_woman_2
+import org.example.project.composeapp.generated.resources.driver_license_woman_3
+import org.example.project.composeapp.generated.resources.driver_license_woman_4
+import org.multipaz.claim.MdocClaim
 import org.multipaz.crypto.Crypto
 
 
@@ -272,7 +274,7 @@ fun App(promptModel: PromptModel) {
         // Show document detail fragment as full screen
         if (showDocumentDetail && selectedDocument != null) {
             DocumentDetailFragment(
-                document = selectedDocument!!,
+                selectedDocument = selectedDocument!!,
                 onClose = {
                     showDocumentDetail = false
                     selectedDocument = null
@@ -408,6 +410,18 @@ fun App(promptModel: PromptModel) {
                                         selectedDocument = doc
                                         showDocumentDetail = true
                                         println("Document selected: ${doc.identifier}") // Debug log
+                                        // Print family name from document credentials
+                                        coroutineScope.launch {
+                                            val credentials = doc.getCredentials()
+                                            val familyName = credentials.firstOrNull()?.let { credential ->
+                                                credential.getClaims(documentTypeRepository!!)
+                                                    .filterIsInstance<MdocClaim>()
+                                                    .find { it.dataElementName == "family_name" }
+                                                    ?.render()
+                                            } ?: "Not available"
+                                            println("Family name App.kt: $familyName")
+                                        }
+                                        
                                     }
                                 ) {
                                     Column(
@@ -536,21 +550,45 @@ private suspend fun createSampleDocument(
         ),
     )
 
-    // Read the portrait image from the lighter file
-    val portraitBytes = getDrawableResourceBytes(
-        getSystemResourceEnvironment(),
-        Res.drawable.portrait
-    )
-
     // Generate random realistic data
     val familyNames = listOf("Johnson", "Williams", "Brown", "Jones", "Garcia", "Miller", "Davis", "Rodriguez", "Martinez", "Hernandez", "Lopez", "Gonzalez", "Wilson", "Anderson", "Thomas", "Taylor", "Moore", "Jackson", "Martin", "Lee")
-    val givenNames = listOf("James", "John", "Robert", "Michael", "William", "David", "Richard", "Joseph", "Thomas", "Christopher", "Charles", "Daniel", "Matthew", "Anthony", "Mark", "Donald", "Steven", "Paul", "Andrew", "Joshua")
+    val maleGivenNames = listOf("James", "John", "Robert", "Michael", "William", "David", "Richard", "Joseph", "Thomas", "Christopher", "Charles", "Daniel", "Matthew", "Anthony", "Mark", "Donald", "Steven", "Paul", "Andrew", "Joshua")
+    val femaleGivenNames = listOf("Mary", "Patricia", "Jennifer", "Linda", "Elizabeth", "Barbara", "Susan", "Jessica", "Sarah", "Karen", "Nancy", "Lisa", "Betty", "Helen", "Sandra", "Donna", "Carol", "Ruth", "Sharon", "Michelle")
     val cities = listOf("New York", "Los Angeles", "Chicago", "Houston", "Phoenix", "Philadelphia", "San Antonio", "San Diego", "Dallas", "San Jose", "Austin", "Jacksonville", "Fort Worth", "Columbus", "Charlotte", "San Francisco", "Indianapolis", "Seattle", "Denver", "Washington")
     val states = listOf("NY", "CA", "IL", "TX", "AZ", "PA", "FL", "OH", "NC", "WA", "CO", "GA", "MI", "VA", "NJ", "OR", "TN", "MA", "IN", "MO")
     val streets = listOf("Main St", "Oak Ave", "Maple Dr", "Cedar Ln", "Pine Rd", "Elm St", "Washington Ave", "Park Dr", "Lake Rd", "River St", "Hill Ave", "Spring Ln", "Forest Dr", "Meadow Rd", "Sunset Blvd", "Ocean Ave", "Mountain Dr", "Valley Rd", "Bridge St", "Center Ave")
     
+    // Randomly select gender (0 = female, 1 = male)
+    val randomGender = (0..1).random()
     val randomFamilyName = familyNames.random()
-    val randomGivenName = givenNames.random()
+    val randomGivenName = if (randomGender == 1) maleGivenNames.random() else femaleGivenNames.random()
+    println("Generated document for ${if (randomGender == 1) "male" else "female"}: $randomGivenName $randomFamilyName")
+    
+    // Read the portrait image based on gender with random selection from multiple options
+    val portraitBytes = getDrawableResourceBytes(
+        getSystemResourceEnvironment(),
+        if (randomGender == 1) {
+            // Randomly select from male images
+            val resource = when ((1..4).random()) {
+                1 -> Res.drawable.driver_license_male_1
+                2 -> Res.drawable.driver_license_male_2
+                3 -> Res.drawable.driver_license_male_3
+                4 -> Res.drawable.driver_license_male_4
+                else -> Res.drawable.driver_license_male_1
+            }
+            resource
+        } else {
+            // Randomly select from female images
+            when ((1..4).random()) {
+                1 -> Res.drawable.driver_license_woman_1
+                2 -> Res.drawable.driver_license_woman_2
+                3 -> Res.drawable.driver_license_woman_3
+                4 -> Res.drawable.driver_license_woman_4
+                else -> Res.drawable.driver_license_woman_1
+            }
+        }
+    )
+    
     val randomCity = cities.random()
     val randomState = states.random()
     val randomStreet = streets.random()
@@ -599,7 +637,7 @@ private suspend fun createSampleDocument(
             })
             addDataElement("un_distinguishing_sign", "USA".toDataItem())
             addDataElement("administrative_number", randomAdminNumber.toDataItem())
-            addDataElement("sex", 1.toDataItem()) // 1 = male
+            addDataElement("sex", randomGender.toDataItem()) // 0 = female, 1 = male
             addDataElement("height", randomHeight.toDataItem()) // height in cm
             addDataElement("weight", randomWeight.toDataItem()) // weight in kg
             addDataElement("birth_place", randomCity.toDataItem())

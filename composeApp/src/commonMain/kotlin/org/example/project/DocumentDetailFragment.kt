@@ -9,6 +9,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeContentPadding
@@ -35,20 +37,26 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.painter.BitmapPainter
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.io.bytestring.ByteString
 import org.example.project.composeapp.generated.resources.Res
 import org.example.project.composeapp.generated.resources.compose_multiplatform
 import org.jetbrains.compose.resources.painterResource
 import org.multipaz.cbor.Simple
+import org.multipaz.cbor.Bstr
+import org.multipaz.cbor.Tstr
+import org.multipaz.cbor.Uint
 import org.multipaz.compose.presentment.Presentment
 import org.multipaz.compose.prompt.PromptDialogs
 import org.multipaz.compose.qrcode.generateQrCode
 import org.multipaz.credential.Credential
+import org.multipaz.claim.MdocClaim
 import org.multipaz.crypto.Crypto
 import org.multipaz.crypto.EcCurve
 import org.multipaz.document.Document
 import org.multipaz.document.DocumentStore
+import org.multipaz.document.NameSpacedData
 import org.multipaz.documenttype.DocumentTypeRepository
 import org.multipaz.documenttype.knowntypes.DrivingLicense
 import org.multipaz.mdoc.connectionmethod.MdocConnectionMethodBle
@@ -71,9 +79,84 @@ import org.multipaz.util.toBase64Url
 // Expect function for platform-specific image decoding
 expect fun decodeImageFromBytes(bytes: ByteArray): ImageBitmap?
 
+// Helper functions to extract name data from credentials
+private fun getFirstNameFromCredentials(
+    credentials: List<Credential>, 
+    documentTypeRepository: DocumentTypeRepository
+): String? {
+    return credentials.firstOrNull()?.let { credential ->
+        credential.getClaims(documentTypeRepository)
+            .filterIsInstance<MdocClaim>()
+            .find { it.dataElementName == "given_name" }
+            ?.render()
+    }
+}
+
+private fun getLastNameFromCredentials(
+    credentials: List<Credential>,
+    documentTypeRepository: DocumentTypeRepository  
+): String? {
+    return credentials.firstOrNull()?.let { credential ->
+        credential.getClaims(documentTypeRepository)
+            .filterIsInstance<MdocClaim>()
+            .find { it.dataElementName == "family_name" }
+            ?.render()
+    }
+}
+
+private fun getGenderFromCredentials(
+    credentials: List<Credential>,
+    documentTypeRepository: DocumentTypeRepository
+): String? {
+    return credentials.firstOrNull()?.let { credential ->
+        val sexClaim = credential.getClaims(documentTypeRepository)
+            .filterIsInstance<MdocClaim>()
+            .find { it.dataElementName == "sex" }
+        
+        sexClaim?.let { claim ->
+            // Try to get the raw value from the claim
+            val sexValue = claim.value
+            when (sexValue) {
+                is Uint -> {
+                    when (sexValue.value.toInt()) {
+                        0 -> "Female"
+                        1 -> "Male"
+                        else -> "Unknown"
+                    }
+                }
+                is Tstr -> {
+                    when (sexValue.value) {
+                        "0" -> "Female"
+                        "1" -> "Male"
+                        else -> "Unknown"
+                    }
+                }
+                else -> "Unknown (${sexValue.toString()})"
+            }
+        }
+    }
+}
+
+private fun getPortraitFromCredentials(
+    credentials: List<Credential>,
+    documentTypeRepository: DocumentTypeRepository
+): ByteArray? {
+    val credential = credentials.firstOrNull() ?: return null
+    val portraitClaim = credential.getClaims(documentTypeRepository)
+        .filterIsInstance<MdocClaim>()
+        .find { it.dataElementName == "portrait" } ?: return null
+    
+    val dataItem = portraitClaim.value
+    return if (dataItem is Bstr) {
+        dataItem.value
+    } else {
+        null
+    }
+}
+
 @Composable
 fun DocumentDetailFragment(
-    document: Document,
+    selectedDocument: Document,
     onClose: () -> Unit,
     presentmentModel: PresentmentModel,
     documentStore: DocumentStore,
@@ -81,8 +164,24 @@ fun DocumentDetailFragment(
     readerTrustManager: TrustManager?,
     promptModel: PromptModel
 ) {
+    println("DocumentDetailFragment: Starting with selectedDocument = ${selectedDocument.identifier}")
+
+    // Use LaunchedEffect to handle suspend function call
+    LaunchedEffect(selectedDocument) {
+        val selectedCredentials = selectedDocument.getCredentials()
+        val familyName = selectedCredentials.firstOrNull()?.let { credential ->
+            credential.getClaims(documentTypeRepository)
+                .filterIsInstance<MdocClaim>()
+                .find { it.dataElementName == "family_name" }
+                ?.render()
+        } ?: "Not available"
+        println("Family name DocumentDetailFragment: $familyName")
+    }
+
+
     var credentials by remember { mutableStateOf<List<Credential>>(emptyList()) }
     var cardArtBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
+    var portraitBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
     val state = presentmentModel?.state?.collectAsState()
     val deviceEngagement = remember { mutableStateOf<ByteString?>(null) }
     var presentmentSource: PresentmentSource? = null
@@ -94,7 +193,7 @@ fun DocumentDetailFragment(
     @Composable
     fun showQrButton(showQrCode: MutableState<ByteString?>) {
         Column(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxWidth(),
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
@@ -175,16 +274,27 @@ fun DocumentDetailFragment(
         }
     }
 
-    LaunchedEffect(document) {
-        credentials = document.getCredentials()
+    LaunchedEffect(selectedDocument) {
+        credentials = selectedDocument.getCredentials()
         // Convert card art ByteString to ImageBitmap
         try {
-            document.metadata.cardArt?.let { byteString ->
+            selectedDocument.metadata.cardArt?.let { byteString ->
                 cardArtBitmap = decodeImageFromBytes(byteString.toByteArray())
             }
         } catch (e: Exception) {
             // Handle any decoding errors
             cardArtBitmap = null
+        }
+        
+        // Load portrait from credentials
+        try {
+            val portraitBytes = getPortraitFromCredentials(credentials, documentTypeRepository)
+            portraitBytes?.let { bytes ->
+                portraitBitmap = decodeImageFromBytes(bytes)
+            }
+        } catch (e: Exception) {
+            // Handle any decoding errors
+            portraitBitmap = null
         }
         
         // Debug: Check what documents are in the store
@@ -247,15 +357,15 @@ fun DocumentDetailFragment(
             Spacer(modifier = Modifier.width(80.dp)) // Balance the layout
         }
 
-        /*presentmentSource = SimplePresentmentSource(
+        presentmentSource = SimplePresentmentSource(
             documentStore = documentStore,
             documentTypeRepository = documentTypeRepository,
             readerTrustManager = readerTrustManager!!,
             preferSignatureToKeyAgreement = true,
             domainMdocSignature = "mdoc",
-        )*/
+        )
 
-        presentmentSource = object : PresentmentSource(
+        /*presentmentSource = object : PresentmentSource(
             documentStore = documentStore,
             documentTypeRepository = documentTypeRepository!!,
             readerTrustManager = readerTrustManager!!
@@ -266,7 +376,7 @@ fun DocumentDetailFragment(
                 keyAgreementPossible: List<EcCurve>
             ): Credential? {
                 // Debug: Print request information
-                println("=== PRESENTMENT DEBUG ===")
+                *//*println("=== PRESENTMENT DEBUG ===")
                 println("Request type: ${request::class.simpleName}")
                 if (request is org.multipaz.request.MdocRequest) {
                     println("MdocRequest docTypes: ${request.docType}")
@@ -282,10 +392,21 @@ fun DocumentDetailFragment(
                     println("  - Display Name: ${doc?.metadata?.displayName}")
                     println("  - Type Display Name: ${doc?.metadata?.typeDisplayName}")
                     println("  - Has credentials: ${doc?.getCertifiedCredentials()?.isNotEmpty()}")
+                }*//*
+                // Fallback to original behavior if no documents available
+                return selectedDocument.let { docId ->
+                    println("Fallback: Selecting credential for document: ${docId.identifier}")
+                    val credential = selectedDocument.getCredentials().first(); *//*documentStore.lookupDocument(document!!.identifier)
+                        ?.getCertifiedCredentials()
+                        ?.firstOrNull()*//*
+
+                    println("Selected credential: ${credential?.document?.identifier}")
+                    println("Family name selectedDocument: ${credential?.let { getLastNameFromCredentials(listOf(it), documentTypeRepository) } ?: "Not available"}")
+                    
+                    credential
                 }
-                
                 // For testing: randomly pick one document from the store
-                if (allDocuments.isNotEmpty()) {
+                *//*if (allDocuments.isNotEmpty()) {
                     val randomDocument = allDocuments.random()
                     println("Randomly selected document for testing: ${randomDocument}")
                     val credential = documentStore.lookupDocument(randomDocument)
@@ -293,19 +414,11 @@ fun DocumentDetailFragment(
                         ?.firstOrNull()
                     println("Selected credential: ${credential?.document?.identifier}")
                     return credential
-                }
+                }*//*
                 
-                // Fallback to original behavior if no documents available
-                return document?.let { docId ->
-                    println("Fallback: Selecting credential for document: ${docId.identifier}")
-                    val credential = documentStore.lookupDocument(document.identifier)
-                        ?.getCertifiedCredentials()
-                        ?.firstOrNull()
-                    println("Selected credential: ${credential?.document?.identifier}")
-                    return credential
-                }
+
             }
-        }
+        }*/
 
 
         when (state?.value) {
@@ -322,6 +435,7 @@ fun DocumentDetailFragment(
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
+                            .verticalScroll(rememberScrollState())
                             .padding(24.dp)
                     ) {
                         // Driving License Image
@@ -347,6 +461,29 @@ fun DocumentDetailFragment(
                             )
                         }
                         
+                        // Portrait Image
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(200.dp)
+                                .padding(bottom = 24.dp),
+                            elevation = CardDefaults.cardElevation(defaultElevation = 6.dp),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Image(
+                                painter = if (portraitBitmap != null) {
+                                    BitmapPainter(portraitBitmap!!)
+                                } else {
+                                    painterResource(Res.drawable.compose_multiplatform)
+                                },
+                                contentDescription = "Document Portrait",
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .clip(RoundedCornerShape(12.dp)),
+                                contentScale = ContentScale.Crop
+                            )
+                        }
+                        
                         // Display Name
                         Text(
                             text = "Display Name",
@@ -354,8 +491,44 @@ fun DocumentDetailFragment(
                             color = MaterialTheme.colorScheme.primary
                         )
                         Text(
-                            text = document.metadata.displayName!!,
+                            text = selectedDocument.metadata.displayName!!,
                             style = MaterialTheme.typography.headlineSmall,
+                            modifier = Modifier.padding(bottom = 16.dp)
+                        )
+                        
+                        // First Name
+                        Text(
+                            text = "First Name",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = getFirstNameFromCredentials(credentials, documentTypeRepository) ?: "Not available",
+                            style = MaterialTheme.typography.bodyLarge,
+                            modifier = Modifier.padding(bottom = 16.dp)
+                        )
+                        
+                        // Last Name
+                        Text(
+                            text = "Last Name", 
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = getLastNameFromCredentials(credentials, documentTypeRepository) ?: "Not available",
+                            style = MaterialTheme.typography.bodyLarge,
+                            modifier = Modifier.padding(bottom = 16.dp)
+                        )
+                        
+                        // Gender
+                        Text(
+                            text = "Gender",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = getGenderFromCredentials(credentials, documentTypeRepository) ?: "Not available",
+                            style = MaterialTheme.typography.bodyLarge,
                             modifier = Modifier.padding(bottom = 16.dp)
                         )
                         
@@ -366,7 +539,7 @@ fun DocumentDetailFragment(
                             color = MaterialTheme.colorScheme.primary
                         )
                         Text(
-                            text = document.metadata.typeDisplayName!!,
+                            text = selectedDocument.metadata.typeDisplayName!!,
                             style = MaterialTheme.typography.bodyLarge,
                             modifier = Modifier.padding(bottom = 16.dp)
                         )
@@ -378,7 +551,7 @@ fun DocumentDetailFragment(
                             color = MaterialTheme.colorScheme.primary
                         )
                         Text(
-                            text = document.identifier,
+                            text = selectedDocument.identifier,
                             style = MaterialTheme.typography.bodyLarge,
                             modifier = Modifier.padding(bottom = 16.dp)
                         )
@@ -473,46 +646,20 @@ fun DocumentDetailFragment(
             PresentmentModel.State.PROCESSING,
             PresentmentModel.State.WAITING_FOR_DOCUMENT_SELECTION,
             PresentmentModel.State.WAITING_FOR_CONSENT,
-            PresentmentModel.State.COMPLETED -> {
-                println("DocumentDetailFragment: Entering PROCESSING/WAITING/COMPLETED branch")
-                println("DocumentDetailFragment: Current state = ${state?.value}")
-                println("deviceEngagement COMPLETED: ${deviceEngagement.value}")
-                
-                // Automatically select a document during the WAITING_FOR_DOCUMENT_SELECTION state
+            PresentmentModel.State.COMPLETED -> {                
                 if (state.value == PresentmentModel.State.WAITING_FOR_DOCUMENT_SELECTION) {
-                    LaunchedEffect(Unit) {
-                        val allDocuments = documentStore.listDocuments()
-                        if (allDocuments.isNotEmpty()) {
-                            val randomDocument: String = allDocuments.random()
-                            println("Automatically selecting document: ${randomDocument}")
-                            val document = documentStore.lookupDocument(randomDocument)
-                            presentmentModel.documentSelected(document)
-                        } else {
-                            println("No documents available, canceling presentment")
-                            presentmentModel.documentSelected(null)
-                        }
-                    }
-                    
-                    // Show a message while automatically selecting
-                    Column(
-                        modifier = Modifier.fillMaxSize(),
-                        verticalArrangement = Arrangement.Center,
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Text("Document selected automatically, processing...")
-                    }
+                    presentmentModel.documentSelected(selectedDocument)
                 }
                 
                 Presentment(
-                    appName = "Multipaz Getting Started Sample",
+                    appName = "Transferring document...",
                     appIconPainter = painterResource(Res.drawable.compose_multiplatform),
                     presentmentModel = presentmentModel,
                     presentmentSource = presentmentSource!!,
                     documentTypeRepository = documentTypeRepository!!,
                     onPresentmentComplete = {
                         presentmentModel.reset()
-                    },
-                    onlyShowConsentPrompt = true
+                    }
                 )
             }
             null -> {
